@@ -48,6 +48,15 @@ progress_bar() {
     local duration=$1
     local width=50
     local progress=0
+    # Calculate sleep interval without bc (use awk as fallback)
+    local sleep_time
+    if command -v bc &>/dev/null; then
+        sleep_time=$(echo "scale=3; $duration / 50" | bc)
+    elif command -v awk &>/dev/null; then
+        sleep_time=$(awk "BEGIN {printf \"%.3f\", $duration / 50}")
+    else
+        sleep_time="0.04"
+    fi
     while [ $progress -le 100 ]; do
         local filled=$((progress * width / 100))
         local empty=$((width - filled))
@@ -56,7 +65,7 @@ progress_bar() {
         printf "%${empty}s" | tr ' ' '-'
         printf "] %d%%${NC}" $progress
         progress=$((progress + 2))
-        sleep "$(echo "scale=3; $duration / 50" | bc)"
+        sleep "$sleep_time"
     done
     printf "\n"
 }
@@ -420,14 +429,31 @@ select_mtu() {
 
 install_dependencies() {
     echo -e "\n${YELLOW}[1/8] Installing System Dependencies...${NC}"
-    apt update -qq > /dev/null 2>&1
-    apt install -y wget curl iptables iptables-persistent net-tools dnsutils \
-        screen bc jq openssh-server golang-go git > /dev/null 2>&1
 
-    # If golang from apt is too old, install manually
+    # Install bc first (needed for progress_bar and version checks)
+    apt-get update -qq > /dev/null 2>&1
+    apt-get install -y bc > /dev/null 2>&1
+
+    # Install all other dependencies
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        wget curl iptables iptables-persistent net-tools dnsutils \
+        screen jq openssh-server golang-go git 2>/dev/null || {
+        echo -e "${YELLOW}  Some packages may have failed, retrying...${NC}"
+        apt-get install -y wget curl iptables net-tools dnsutils \
+            screen jq openssh-server git > /dev/null 2>&1
+    }
+
+    # If golang from apt is too old or missing, install manually
     local go_ver
     go_ver=$(go version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
-    if [[ -z "$go_ver" ]] || (( $(echo "$go_ver < 1.21" | bc -l) )); then
+    local need_go=false
+    if [[ -z "$go_ver" ]]; then
+        need_go=true
+    elif command -v bc &>/dev/null && (( $(echo "$go_ver < 1.21" | bc -l) )); then
+        need_go=true
+    fi
+
+    if [[ "$need_go" == "true" ]]; then
         echo -e "${CYAN}Installing Go $GO_VERSION...${NC}"
         wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
         rm -rf /usr/local/go

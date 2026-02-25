@@ -7,11 +7,6 @@
 
 set -e
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
 # ---- CONFIGURE THIS ----
 GITHUB_USER="Iddy29"
 REPO_NAME="slowdns-tz"
@@ -21,40 +16,69 @@ BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$GITHUB_USER/$REPO_NAME/$BRANCH"
 INSTALL_DIR="/opt/ai-slowdns-tz"
 
-echo -e "${CYAN}[*] A.I SLOWDNS TZ - Quick Installer${NC}"
+echo ""
+echo "  [*] A.I SLOWDNS TZ - Quick Installer"
 echo ""
 
 # Check root
 if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}[!] This script must be run as root (use sudo)${NC}"
+    echo "  [!] This script must be run as root"
+    echo "  [!] Run: sudo bash INSTALL_COMMAND.sh"
     exit 1
 fi
 
-# Install dependencies
-echo -e "${CYAN}[*] Installing dependencies...${NC}"
-apt update -qq > /dev/null 2>&1
-apt install -y wget curl > /dev/null 2>&1
+# Pre-install essential tools (bc, wget, curl needed before main script)
+echo "  [*] Installing essential tools..."
+apt-get update -qq > /dev/null 2>&1
+apt-get install -y bc wget curl > /dev/null 2>&1
+echo "  [+] Essential tools ready"
 
 # Create install directory
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/scripts"
 
 # Download files
-echo -e "${CYAN}[*] Downloading files from GitHub...${NC}"
+echo "  [*] Downloading files from GitHub..."
 
-wget -q "$BASE_URL/SLOWDNS-TZ.sh" -O "$INSTALL_DIR/SLOWDNS-TZ.sh"
-wget -q "$BASE_URL/scripts/ai-monitor.sh" -O "$INSTALL_DIR/scripts/ai-monitor.sh"
-wget -q "$BASE_URL/scripts/ai-optimizer.py" -O "$INSTALL_DIR/scripts/ai-optimizer.py"
+download_ok=true
+
+if wget -q "$BASE_URL/SLOWDNS-TZ.sh" -O "$INSTALL_DIR/SLOWDNS-TZ.sh"; then
+    echo "  [+] SLOWDNS-TZ.sh"
+else
+    echo "  [-] FAILED: SLOWDNS-TZ.sh"
+    download_ok=false
+fi
+
+if wget -q "$BASE_URL/scripts/ai-monitor.sh" -O "$INSTALL_DIR/scripts/ai-monitor.sh"; then
+    echo "  [+] scripts/ai-monitor.sh"
+else
+    echo "  [-] FAILED: scripts/ai-monitor.sh"
+fi
+
+if wget -q "$BASE_URL/scripts/ai-optimizer.py" -O "$INSTALL_DIR/scripts/ai-optimizer.py"; then
+    echo "  [+] scripts/ai-optimizer.py"
+else
+    echo "  [-] FAILED: scripts/ai-optimizer.py"
+fi
+
+if [ "$download_ok" = false ]; then
+    echo ""
+    echo "  [!] Main script download failed. Check your internet connection."
+    exit 1
+fi
 
 # Set permissions
 chmod +x "$INSTALL_DIR/SLOWDNS-TZ.sh"
-chmod +x "$INSTALL_DIR/scripts/ai-monitor.sh"
-chmod +x "$INSTALL_DIR/scripts/ai-optimizer.py"
+chmod +x "$INSTALL_DIR/scripts/ai-monitor.sh" 2>/dev/null
+chmod +x "$INSTALL_DIR/scripts/ai-optimizer.py" 2>/dev/null
 
-echo -e "${GREEN}[+] Download complete!${NC}"
+# Create symlink
+ln -sf "$INSTALL_DIR/SLOWDNS-TZ.sh" /usr/local/bin/slowdns-tz
+
+echo ""
+echo "  [+] Download complete!"
+echo "  [*] Launching A.I SLOWDNS TZ..."
 echo ""
 
-# Launch main script
-echo -e "${CYAN}[*] Launching A.I SLOWDNS TZ...${NC}"
-echo ""
-bash "$INSTALL_DIR/SLOWDNS-TZ.sh"
+# Run the script directly (NOT piped) so interactive input works
+exec bash "$INSTALL_DIR/SLOWDNS-TZ.sh"

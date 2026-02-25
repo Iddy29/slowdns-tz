@@ -5,7 +5,7 @@ SlowDNS + DNSTT SSH Tunnel setup tool for Ubuntu VPS servers.
 ## Quick Install (Run on VPS)
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/Iddy29/slowdns-tz/main/INSTALL_COMMAND.sh | sudo bash
+wget -qO install.sh https://raw.githubusercontent.com/Iddy29/slowdns-tz/main/INSTALL_COMMAND.sh && sudo bash install.sh
 ```
 
 Or use the interactive installer:
