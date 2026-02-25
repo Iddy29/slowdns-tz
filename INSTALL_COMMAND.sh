@@ -33,9 +33,11 @@ apt-get update -qq > /dev/null 2>&1
 apt-get install -y bc wget curl > /dev/null 2>&1
 echo "  [+] Essential tools ready"
 
-# Create install directory
+# Create install directory structure
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/scripts"
+mkdir -p "$INSTALL_DIR/config"
+mkdir -p "$INSTALL_DIR/logs"
 
 # Download files
 echo "  [*] Downloading files from GitHub..."
