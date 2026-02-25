@@ -1,0 +1,7 @@
+#!/bin/bash
+# Placeholder for DNSTT Server Binary
+# In a real implementation, this would be the compiled DNSTT server binary
+
+echo "DNSTT Server Placeholder"
+echo "This is a placeholder file. In a real implementation, this would be the compiled DNSTT server binary."
+echo "Please replace this file with the actual dnstt-server binary."

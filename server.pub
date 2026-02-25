@@ -1,0 +1,4 @@
+# This file is a placeholder.
+# Real keys are generated during installation by: dnstt-server -gen-key
+# DNSTT uses Curve25519 keys in hex format (NOT PEM format).
+# DO NOT use this file. Run SLOWDNS-TZ.sh to generate real keys.
