@@ -34,7 +34,8 @@ REPO_NAME="slowdns-tz"
 # DNSTT build/install configuration
 DNSTT_BIN="$INSTALL_DIR/dnstt-server"
 # Go version pinned for best compatibility across Ubuntu/Debian.
-# Go 1.21 is widely supported and avoids older toolchain issues.
+# Ubuntu 20.04 is happy with Go 1.21.x installed from go.dev tarball.
+# (Not the distro package; we install the official toolchain.)
 GO_VERSION_DEFAULT="1.21.13"
 GO_VERSION="$GO_VERSION_DEFAULT"
 
@@ -144,6 +145,10 @@ install_go() {
             ;;
     esac
 
+    # Remove any distro Go to avoid PATH/version confusion.
+    apt-get remove -y golang-go golang 2>/dev/null || true
+    apt-get autoremove -y 2>/dev/null || true
+
     rm -rf /usr/local/go
     mkdir -p /tmp/slowdns-go
 
@@ -159,6 +164,12 @@ install_go() {
     tar -C /usr/local -xzf "/tmp/slowdns-go/${tarball}"
 
     export PATH="/usr/local/go/bin:$PATH"
+
+    # Persist PATH for interactive shells.
+    cat > /etc/profile.d/go.sh <<'EOF'
+export PATH=/usr/local/go/bin:$PATH
+EOF
+    chmod 644 /etc/profile.d/go.sh
     if ! require_cmd go; then
         echo -e "${RED}FATAL: Go install failed (go binary not found).${NC}"
         exit 1
@@ -178,12 +189,8 @@ build_dnstt() {
         ca-certificates wget curl git tar \
         build-essential > /dev/null 2>&1 || true
 
-    # Ensure Go present (pin version for Debian/Ubuntu compatibility)
-    if ! require_cmd go; then
-        install_go
-    else
-        echo -e "${GREEN}Go already present: $(go version)${NC}"
-    fi
+    # Always use pinned Go to avoid old distro go/toolchain issues on Ubuntu 20.04.
+    install_go
 
     # Build from official dnstt module (stable)
     export PATH="/usr/local/go/bin:$PATH"
@@ -199,7 +206,8 @@ build_dnstt() {
         GO111MODULE=on \
         GOMODCACHE="$build_root/gomodcache" \
         GOPATH="$build_root/gopath" \
-        go env -w GOPROXY=https://proxy.golang.org,direct >/dev/null 2>&1 && \
+        GOPROXY=https://proxy.golang.org,direct \
+        GOSUMDB=sum.golang.org \
         go install "${DNSTT_MODULE}/cmd/dnstt-server@${DNSTT_VERSION}" >/dev/null 2>&1
     ) || {
         echo -e "${RED}FATAL: Go build failed for dnstt-server.${NC}"
