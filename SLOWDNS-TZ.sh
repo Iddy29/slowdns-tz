@@ -191,51 +191,87 @@ build_dnstt() {
 
     # Always use pinned Go to avoid old distro go/toolchain issues on Ubuntu 20.04.
     install_go
-
-    # Build from official dnstt module (stable)
     export PATH="/usr/local/go/bin:$PATH"
+
     local build_root
     build_root=$(mktemp -d /tmp/dnstt-build.XXXXXX)
+    local built_bin=""
 
-    # Use a pinned version tag for reproducible builds.
-    local DNSTT_MODULE="github.com/Mygod/dnstt"
-    local DNSTT_VERSION="v1.20240115"  # stable tag in common installers
+    # --- Strategy 1: git clone + go build (most reliable, no version tag needed) ---
+    local CLONE_URLS=(
+        "https://www.bamsoftware.com/git/dnstt.git"
+        "https://github.com/Mygod/dnstt.git"
+        "https://github.com/refraction-networking/dnstt.git"
+    )
 
-    echo -e "${CYAN}  Fetching ${DNSTT_MODULE}@${DNSTT_VERSION}...${NC}"
-    (cd "$build_root" && \
-        GO111MODULE=on \
-        GOMODCACHE="$build_root/gomodcache" \
-        GOPATH="$build_root/gopath" \
-        GOPROXY=https://proxy.golang.org,direct \
-        GOSUMDB=sum.golang.org \
-        go install "${DNSTT_MODULE}/cmd/dnstt-server@${DNSTT_VERSION}" >/dev/null 2>&1
-    ) || {
-        echo -e "${RED}FATAL: Go build failed for dnstt-server.${NC}"
-        echo -e "${YELLOW}Hint: network/DNS issues can break module downloads.${NC}"
-        exit 1
-    }
+    for url in "${CLONE_URLS[@]}"; do
+        echo -e "${CYAN}  Cloning dnstt from: $url ...${NC}"
+        if git clone --depth=1 "$url" "$build_root/dnstt" 2>/dev/null; then
+            echo -e "${GREEN}  Clone OK.${NC}"
+            local server_dir=""
+            if [[ -d "$build_root/dnstt/dnstt-server" ]]; then
+                server_dir="$build_root/dnstt/dnstt-server"
+            elif [[ -d "$build_root/dnstt/cmd/dnstt-server" ]]; then
+                server_dir="$build_root/dnstt/cmd/dnstt-server"
+            fi
 
-    # Locate installed binary
-    local built_bin
-    built_bin="$build_root/gopath/bin/dnstt-server"
-    if [[ ! -f "$built_bin" ]]; then
-        # go install without GOPATH override may land in ~/go/bin
-        if [[ -f "$HOME/go/bin/dnstt-server" ]]; then
-            built_bin="$HOME/go/bin/dnstt-server"
+            if [[ -n "$server_dir" ]]; then
+                echo -e "${CYAN}  Building dnstt-server...${NC}"
+                if (cd "$server_dir" && \
+                        GOPATH="$build_root/gopath" \
+                        GOCACHE="$build_root/gocache" \
+                        GOPROXY="https://proxy.golang.org,direct" \
+                        go build -o "$DNSTT_BIN" . 2>&1); then
+                    built_bin="$DNSTT_BIN"
+                    echo -e "${GREEN}  Build success!${NC}"
+                    break
+                else
+                    echo -e "${YELLOW}  Build failed from $url, trying next...${NC}"
+                    rm -rf "$build_root/dnstt"
+                fi
+            else
+                echo -e "${YELLOW}  dnstt-server directory not found in repo, trying next...${NC}"
+                rm -rf "$build_root/dnstt"
+            fi
+        else
+            echo -e "${YELLOW}  Clone failed from $url, trying next...${NC}"
         fi
+    done
+
+    # --- Strategy 2: download pre-built binary as last resort ---
+    if [[ -z "$built_bin" ]] || [[ ! -f "$DNSTT_BIN" ]]; then
+        echo -e "${YELLOW}  git build failed. Trying pre-built binary...${NC}"
+        local arch
+        arch=$(arch_normalize)
+        local PREBUILT_URLS=(
+            "https://github.com/Mygod/dnstt/releases/latest/download/dnstt-server-linux-${arch}"
+            "https://raw.githubusercontent.com/AvidalSharing/dnstt-server-binary/main/dnstt-server"
+            "https://raw.githubusercontent.com/usfrfrjikrvj/DN/main/dnstt-server"
+        )
+        for pb_url in "${PREBUILT_URLS[@]}"; do
+            echo -e "${CYAN}  Trying: $pb_url${NC}"
+            if wget -q "$pb_url" -O "$DNSTT_BIN" 2>/dev/null && [[ -s "$DNSTT_BIN" ]]; then
+                chmod +x "$DNSTT_BIN"
+                built_bin="$DNSTT_BIN"
+                echo -e "${GREEN}  Downloaded pre-built binary.${NC}"
+                break
+            fi
+        done
     fi
 
-    if [[ ! -f "$built_bin" ]]; then
-        echo -e "${RED}FATAL: dnstt-server binary not found after build.${NC}"
+    rm -rf "$build_root"
+
+    if [[ -z "$built_bin" ]] || [[ ! -f "$DNSTT_BIN" ]]; then
+        echo -e "${RED}FATAL: Could not build or download dnstt-server!${NC}"
         exit 1
     fi
 
-    install -m 0755 "$built_bin" "$DNSTT_BIN"
+    chmod +x "$DNSTT_BIN"
 
     if file "$DNSTT_BIN" | grep -q "ELF"; then
-        echo -e "${GREEN}  dnstt-server built: $DNSTT_BIN${NC}"
+        echo -e "${GREEN}  dnstt-server ready: $DNSTT_BIN${NC}"
     else
-        echo -e "${YELLOW}  WARNING: dnstt-server output not detected as ELF.${NC}"
+        echo -e "${YELLOW}  WARNING: dnstt-server may not be a valid ELF binary.${NC}"
     fi
     progress_bar 2
 }
