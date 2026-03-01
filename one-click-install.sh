@@ -2,7 +2,7 @@
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║         A.I SLOWDNS TZ - One Click Installer                 ║
-# ║              For Ubuntu 20.04+ VPS Systems                   ║
+# ║              For Ubuntu/Debian VPS Systems                   ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -e
@@ -35,8 +35,8 @@ fi
 check_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
-        if [[ "$ID" != "ubuntu" ]]; then
-            echo -e "${YELLOW}[!] Warning: This script is optimized for Ubuntu. Detected: $PRETTY_NAME${NC}"
+        if [[ "$ID" != "ubuntu" && "$ID" != "debian" ]]; then
+            echo -e "${YELLOW}[!] Warning: This script is optimized for Ubuntu/Debian. Detected: $PRETTY_NAME${NC}"
             read -p "    Continue anyway? (y/n): " -n 1 -r
             echo
             [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1

@@ -17,17 +17,26 @@ WHITE='\033[1;37m'
 NC='\033[0m'
 
 # --- Global Config ---
-INSTALL_DIR="/opt/ai-slowdns-tz"
-CONFIG_FILE="$INSTALL_DIR/config/slowdns.conf"
-USERS_DB="$INSTALL_DIR/config/users.db"
-LOG_DIR="$INSTALL_DIR/logs"
-DNSTT_BIN="$INSTALL_DIR/dnstt-server"
+INSTALL_DIR="/etc/slowdns"
+CONFIG_FILE="$INSTALL_DIR/slowdns.conf"
+USERS_DB="$INSTALL_DIR/users.db"
+LOG_DIR="/var/log/slowdns"
+SLDNS_BIN="$INSTALL_DIR/sldns-server"
+SLDNS_CLIENT="$INSTALL_DIR/sldns-client"
 PRIVKEY_FILE="$INSTALL_DIR/server.key"
 PUBKEY_FILE="$INSTALL_DIR/server.pub"
-DEFAULT_MTU=512
 DNSTT_PORT=5300
 SSH_PORT=22
-GO_VERSION="1.22.5"
+CLIENT_PORT=3369
+GITHUB_USER="Iddy29"
+REPO_NAME="slowdns-tz"
+
+# DNSTT build/install configuration
+DNSTT_BIN="$INSTALL_DIR/dnstt-server"
+# Go version pinned for best compatibility across Ubuntu/Debian.
+# Go 1.21 is widely supported and avoids older toolchain issues.
+GO_VERSION_DEFAULT="1.21.13"
+GO_VERSION="$GO_VERSION_DEFAULT"
 
 # --- Helper Functions ---
 print_header() {
@@ -75,6 +84,152 @@ check_root() {
         echo -e "${RED}This script must be run as root. Use: sudo $0${NC}"
         exit 1
     fi
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+detect_os() {
+    OS_ID="unknown"
+    OS_VERSION_ID=""
+    OS_PRETTY="unknown"
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS_ID="${ID:-unknown}"
+        OS_VERSION_ID="${VERSION_ID:-}"
+        OS_PRETTY="${PRETTY_NAME:-$OS_ID}"
+    fi
+}
+
+ensure_apt_supported() {
+    detect_os
+    if ! require_cmd apt-get; then
+        echo -e "${RED}FATAL: apt-get not found. This installer supports Ubuntu/Debian only.${NC}"
+        echo -e "${YELLOW}Detected: ${OS_PRETTY}${NC}"
+        exit 1
+    fi
+    case "$OS_ID" in
+        ubuntu|debian) : ;;
+        *)
+            echo -e "${YELLOW}WARNING: Detected ${OS_PRETTY}. Proceeding with apt-based install.${NC}"
+            ;;
+    esac
+}
+
+arch_normalize() {
+    local a
+    a=$(uname -m)
+    case "$a" in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        armv7l|armv7) echo "armv6l" ;;
+        i386|i686) echo "386" ;;
+        *) echo "$a" ;;
+    esac
+}
+
+install_go() {
+    echo -e "\n${YELLOW}Installing Go toolchain (Go ${GO_VERSION})...${NC}"
+
+    local arch os
+    os="linux"
+    arch=$(arch_normalize)
+
+    case "$arch" in
+        amd64|arm64|386) : ;;
+        *)
+            echo -e "${RED}FATAL: Unsupported CPU architecture for Go tarball: $(uname -m)${NC}"
+            exit 1
+            ;;
+    esac
+
+    rm -rf /usr/local/go
+    mkdir -p /tmp/slowdns-go
+
+    local tarball url
+    tarball="go${GO_VERSION}.${os}-${arch}.tar.gz"
+    url="https://go.dev/dl/${tarball}"
+
+    if ! wget -q "$url" -O "/tmp/slowdns-go/${tarball}"; then
+        echo -e "${RED}FATAL: Failed to download Go: $url${NC}"
+        exit 1
+    fi
+
+    tar -C /usr/local -xzf "/tmp/slowdns-go/${tarball}"
+
+    export PATH="/usr/local/go/bin:$PATH"
+    if ! require_cmd go; then
+        echo -e "${RED}FATAL: Go install failed (go binary not found).${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Go installed: $(go version)${NC}"
+}
+
+build_dnstt() {
+    echo -e "\n${YELLOW}[4/8] Building DNSTT (dnstt-server) from source...${NC}"
+    ensure_apt_supported
+
+    mkdir -p "$INSTALL_DIR"
+
+    # Install build deps
+    apt-get update -qq > /dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        ca-certificates wget curl git tar \
+        build-essential > /dev/null 2>&1 || true
+
+    # Ensure Go present (pin version for Debian/Ubuntu compatibility)
+    if ! require_cmd go; then
+        install_go
+    else
+        echo -e "${GREEN}Go already present: $(go version)${NC}"
+    fi
+
+    # Build from official dnstt module (stable)
+    export PATH="/usr/local/go/bin:$PATH"
+    local build_root
+    build_root=$(mktemp -d /tmp/dnstt-build.XXXXXX)
+
+    # Use a pinned version tag for reproducible builds.
+    local DNSTT_MODULE="github.com/Mygod/dnstt"
+    local DNSTT_VERSION="v1.20240115"  # stable tag in common installers
+
+    echo -e "${CYAN}  Fetching ${DNSTT_MODULE}@${DNSTT_VERSION}...${NC}"
+    (cd "$build_root" && \
+        GO111MODULE=on \
+        GOMODCACHE="$build_root/gomodcache" \
+        GOPATH="$build_root/gopath" \
+        go env -w GOPROXY=https://proxy.golang.org,direct >/dev/null 2>&1 && \
+        go install "${DNSTT_MODULE}/cmd/dnstt-server@${DNSTT_VERSION}" >/dev/null 2>&1
+    ) || {
+        echo -e "${RED}FATAL: Go build failed for dnstt-server.${NC}"
+        echo -e "${YELLOW}Hint: network/DNS issues can break module downloads.${NC}"
+        exit 1
+    }
+
+    # Locate installed binary
+    local built_bin
+    built_bin="$build_root/gopath/bin/dnstt-server"
+    if [[ ! -f "$built_bin" ]]; then
+        # go install without GOPATH override may land in ~/go/bin
+        if [[ -f "$HOME/go/bin/dnstt-server" ]]; then
+            built_bin="$HOME/go/bin/dnstt-server"
+        fi
+    fi
+
+    if [[ ! -f "$built_bin" ]]; then
+        echo -e "${RED}FATAL: dnstt-server binary not found after build.${NC}"
+        exit 1
+    fi
+
+    install -m 0755 "$built_bin" "$DNSTT_BIN"
+
+    if file "$DNSTT_BIN" | grep -q "ELF"; then
+        echo -e "${GREEN}  dnstt-server built: $DNSTT_BIN${NC}"
+    else
+        echo -e "${YELLOW}  WARNING: dnstt-server output not detected as ELF.${NC}"
+    fi
+    progress_bar 2
 }
 
 log_msg() {
@@ -428,40 +583,26 @@ select_mtu() {
 # ========================================================================
 
 install_dependencies() {
-    echo -e "\n${YELLOW}[1/8] Installing System Dependencies...${NC}"
+    echo -e "\n${YELLOW}[1/7] Installing System Dependencies...${NC}"
 
-    # Install bc first (needed for progress_bar and version checks)
+    ensure_apt_supported
+
     apt-get update -qq > /dev/null 2>&1
-    apt-get install -y bc > /dev/null 2>&1
 
-    # Install all other dependencies
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        wget curl iptables iptables-persistent net-tools dnsutils \
-        screen jq openssh-server golang-go git 2>/dev/null || {
-        echo -e "${YELLOW}  Some packages may have failed, retrying...${NC}"
+        wget curl iptables net-tools dnsutils bc \
+        screen jq openssh-server git cron \
+        python3 python3-dnslib whois dropbear \
+        dos2unix ca-certificates tar \
+        netfilter-persistent > /dev/null 2>&1 || {
+        echo -e "${YELLOW}  Some packages failed, installing essentials...${NC}"
         apt-get install -y wget curl iptables net-tools dnsutils \
-            screen jq openssh-server git > /dev/null 2>&1
+            screen jq openssh-server git cron bc > /dev/null 2>&1
     }
 
-    # If golang from apt is too old or missing, install manually
-    local go_ver
-    go_ver=$(go version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
-    local need_go=false
-    if [[ -z "$go_ver" ]]; then
-        need_go=true
-    elif command -v bc &>/dev/null && (( $(echo "$go_ver < 1.21" | bc -l) )); then
-        need_go=true
-    fi
-
-    if [[ "$need_go" == "true" ]]; then
-        echo -e "${CYAN}Installing Go $GO_VERSION...${NC}"
-        wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
-        rm -rf /usr/local/go
-        tar -C /usr/local -xzf /tmp/go.tar.gz
-        export PATH=$PATH:/usr/local/go/bin
-        echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
-        rm -f /tmp/go.tar.gz
-    fi
+    # Enable cron
+    service cron reload > /dev/null 2>&1
+    service cron restart > /dev/null 2>&1
 
     progress_bar 2
     echo -e "${GREEN}Dependencies installed.${NC}"
@@ -486,91 +627,91 @@ SSHCONF
 }
 
 configure_network() {
-    echo -e "\n${YELLOW}[3/8] Configuring Network (IPv4/IPv6 Forwarding)...${NC}"
+    echo -e "\n${YELLOW}[3/7] Configuring Network...${NC}"
 
-    # Enable forwarding (idempotent - check before appending)
+    # Enable forwarding
     grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
     grep -q '^net.ipv6.conf.all.forwarding=1' /etc/sysctl.conf || echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf
     sysctl -p > /dev/null 2>&1
 
+    # CRITICAL: Stop systemd-resolved — it occupies port 53 and blocks DNSTT
+    echo -e "${CYAN}  Stopping systemd-resolved (frees port 53)...${NC}"
+    systemctl stop systemd-resolved > /dev/null 2>&1
+    systemctl disable systemd-resolved > /dev/null 2>&1
+
+    # Fix DNS resolution after disabling systemd-resolved
+    if [[ -L /etc/resolv.conf ]]; then
+        rm -f /etc/resolv.conf
+    fi
+    cat > /etc/resolv.conf << 'DNSEOF'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+DNSEOF
+    echo -e "${GREEN}  systemd-resolved stopped, using 1.1.1.1 + 8.8.8.8${NC}"
+
+    # Kill anything else on port 53
+    if ss -uln | grep -q ':53 '; then
+        echo -e "${YELLOW}  Something still on port 53, killing...${NC}"
+        fuser -k 53/udp > /dev/null 2>&1
+        fuser -k 53/tcp > /dev/null 2>&1
+        sleep 1
+    fi
+
     progress_bar 1
-    echo -e "${GREEN}Network forwarding enabled.${NC}"
+    echo -e "${GREEN}Network configured.${NC}"
 }
 
-build_dnstt() {
-    echo -e "\n${YELLOW}[4/8] Building DNSTT Server from Source...${NC}"
+download_binaries() {
+    echo -e "\n${YELLOW}[4/7] Downloading SlowDNS Binaries...${NC}"
 
     mkdir -p "$INSTALL_DIR"
 
-    # Make sure Go is in PATH (if manually installed earlier)
-    if [[ -d /usr/local/go/bin ]]; then
-        export PATH=$PATH:/usr/local/go/bin
-    fi
+    local BASE_URL="https://raw.githubusercontent.com/$GITHUB_USER/$REPO_NAME/main/bin"
 
-    local build_success=false
-
-    # Try to build from source (preferred - always latest)
-    if command -v go &>/dev/null; then
-        echo -e "${CYAN}Go found: $(go version)${NC}"
-        echo -e "${CYAN}Building dnstt-server from source...${NC}"
-        rm -rf /tmp/dnstt-build
-        mkdir -p /tmp/dnstt-build
-
-        # Try multiple git sources
-        if git clone https://www.bamsoftware.com/git/dnstt.git /tmp/dnstt-build/dnstt 2>/dev/null; then
-            echo -e "${GREEN}  Cloned from bamsoftware.com${NC}"
-        elif git clone https://github.com/refraction-networking/dnstt.git /tmp/dnstt-build/dnstt 2>/dev/null; then
-            echo -e "${GREEN}  Cloned from github (refraction-networking)${NC}"
-        elif git clone https://github.com/Mygod/dnstt.git /tmp/dnstt-build/dnstt 2>/dev/null; then
-            echo -e "${GREEN}  Cloned from github (Mygod)${NC}"
-        else
-            echo -e "${RED}  Failed to clone dnstt source from all mirrors${NC}"
-        fi
-
-        if [[ -d "/tmp/dnstt-build/dnstt/dnstt-server" ]]; then
-            cd /tmp/dnstt-build/dnstt/dnstt-server
-            echo -e "${CYAN}  Compiling...${NC}"
-            if go build -o "$DNSTT_BIN" 2>&1; then
-                build_success=true
-                echo -e "${GREEN}  Build successful!${NC}"
-            else
-                echo -e "${RED}  Go build failed${NC}"
-            fi
-            cd "$INSTALL_DIR"
-        fi
-        rm -rf /tmp/dnstt-build
+    # Download sldns-server (the SlowDNS server binary)
+    echo -e "${CYAN}  Downloading sldns-server...${NC}"
+    if wget -q "$BASE_URL/sldns-server" -O "$SLDNS_BIN" 2>/dev/null; then
+        chmod +x "$SLDNS_BIN"
+        echo -e "${GREEN}  [+] sldns-server downloaded${NC}"
     else
-        echo -e "${YELLOW}Go not found, skipping build from source${NC}"
+        # Fallback sources
+        echo -e "${YELLOW}  Primary source failed, trying fallback...${NC}"
+        wget -q "https://raw.githubusercontent.com/NevermoreSSH/hopp/main/slowdns/sldns-server" -O "$SLDNS_BIN" 2>/dev/null || {
+            echo -e "${RED}  FATAL: Could not download sldns-server!${NC}"
+            log_msg "ERROR" "sldns-server download failed"
+            exit 1
+        }
+        chmod +x "$SLDNS_BIN"
+        echo -e "${GREEN}  [+] sldns-server downloaded (fallback)${NC}"
     fi
 
-    # Fallback: download pre-built binary
-    if [[ "$build_success" == "false" ]] || [[ ! -f "$DNSTT_BIN" ]]; then
-        echo -e "${CYAN}Downloading pre-built dnstt-server binary...${NC}"
-        # Try multiple sources
-        wget -q "https://raw.githubusercontent.com/AvidalSharing/dnstt-server-binary/main/dnstt-server" -O "$DNSTT_BIN" 2>/dev/null || \
-        wget -q "https://raw.githubusercontent.com/usfrfrjikrvj/DN/main/dnstt-server" -O "$DNSTT_BIN" 2>/dev/null || \
-        echo -e "${RED}  Failed to download pre-built binary${NC}"
+    # Download sldns-client
+    echo -e "${CYAN}  Downloading sldns-client...${NC}"
+    if wget -q "$BASE_URL/sldns-client" -O "$SLDNS_CLIENT" 2>/dev/null; then
+        chmod +x "$SLDNS_CLIENT"
+        echo -e "${GREEN}  [+] sldns-client downloaded${NC}"
+    else
+        wget -q "https://raw.githubusercontent.com/NevermoreSSH/hopp/main/slowdns/sldns-client" -O "$SLDNS_CLIENT" 2>/dev/null || {
+            echo -e "${YELLOW}  WARNING: Could not download sldns-client (optional)${NC}"
+        }
+        chmod +x "$SLDNS_CLIENT" 2>/dev/null
     fi
 
-    if [[ ! -f "$DNSTT_BIN" ]]; then
-        echo -e "${RED}FATAL: Could not build or download dnstt-server!${NC}"
-        echo -e "${RED}Please install Go and retry, or provide the binary manually at: $DNSTT_BIN${NC}"
-        log_msg "ERROR" "dnstt-server binary not available"
+    # Verify server binary
+    if [[ ! -f "$SLDNS_BIN" ]] || [[ ! -x "$SLDNS_BIN" ]]; then
+        echo -e "${RED}FATAL: sldns-server binary not found or not executable!${NC}"
         exit 1
     fi
 
-    chmod +x "$DNSTT_BIN"
-
-    # Verify binary works (dnstt-server -help outputs usage to stderr)
-    if "$DNSTT_BIN" -help 2>&1 | grep -qi "gen-key\|privkey\|udp\|DOMAIN" ; then
-        echo -e "${GREEN}dnstt-server binary is functional.${NC}"
-        log_msg "INFO" "dnstt-server binary verified OK"
+    # Quick test
+    if file "$SLDNS_BIN" | grep -q "ELF"; then
+        echo -e "${GREEN}  sldns-server binary is a valid ELF executable${NC}"
     else
-        echo -e "${YELLOW}WARNING: Could not verify dnstt-server binary. Will attempt to continue.${NC}"
-        log_msg "WARN" "dnstt-server binary verification uncertain"
+        echo -e "${RED}  WARNING: sldns-server may not be a valid Linux binary${NC}"
     fi
 
     progress_bar 2
+    echo -e "${GREEN}Binaries ready.${NC}"
 }
 
 generate_keys() {

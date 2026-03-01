@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # A.I SLOWDNS TZ Monitor
-LOG_DIR="/opt/ai-slowdns-tz/logs"
-CONFIG_DIR="/opt/ai-slowdns-tz/config"
+LOG_DIR="/var/log/slowdns"
+CONFIG_DIR="/etc/slowdns"
 
 # Function to check and restart services
 check_service() {
@@ -35,26 +35,8 @@ optimize_dns() {
 
 # Main monitoring loop
 while true; do
-    # Check DNSTT server
-    if ! pgrep -f "dnstt-server" > /dev/null; then
-        cd /opt/ai-slowdns-tz
-        screen -dmS ai-slowdns ./dnstt-server -udp :5300 -mtu 1400 -privkey-file server.key NAMESERVER_PLACEHOLDER 127.0.0.1:PORT_PLACEHOLDER
-        echo "[$(date)] DNSTT server restarted" >> $LOG_DIR/monitor.log
-    fi
-    
-    # Check critical services
-    check_service dnsmasq
-    check_service unbound
-    check_service redis
-    
-    # Run DNS optimization
-    optimize_dns
-    
-    # Run Python AI optimizer
-    if ! pgrep -f "ai-optimizer.py" > /dev/null; then
-        python3 /opt/ai-slowdns-tz/scripts/ai-optimizer.py &
-        echo "[$(date)] AI Optimizer restarted" >> $LOG_DIR/monitor.log
-    fi
-    
+    # DNSTT is managed by systemd (ai-slowdns-tz.service). Only monitor it.
+    check_service ai-slowdns-tz.service
+
     sleep 30
 done

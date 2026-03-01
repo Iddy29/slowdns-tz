@@ -2,7 +2,7 @@
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║         A.I SLOWDNS TZ - Quick Install Command               ║
-# ║              Run this on your Ubuntu VPS                      ║
+# ║              Run this on Ubuntu/Debian VPS                    ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -e

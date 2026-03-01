@@ -1,6 +1,6 @@
 # A.I SLOWDNS TZ
 
-SlowDNS + DNSTT SSH Tunnel setup tool for Ubuntu VPS servers.
+SlowDNS + DNSTT SSH Tunnel setup tool for Ubuntu/Debian VPS servers.
 
 ## Quick Install (Run on VPS)
 
@@ -16,7 +16,7 @@ wget -qO install.sh https://raw.githubusercontent.com/Iddy29/slowdns-tz/main/one
 
 ## Requirements
 
-- Ubuntu 20.04+ VPS
+- Ubuntu 20.04+ or Debian 10+ VPS
 - Root access
 - A registered domain name
 - Domain NS records pointed to your VPS IP
