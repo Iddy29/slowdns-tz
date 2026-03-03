@@ -1144,6 +1144,143 @@ change_mtu() {
 }
 
 # ========================================================================
+# AUTO REBOOT & PING WATCHDOG
+# ========================================================================
+
+setup_auto_reboot() {
+    echo -e "\n${CYAN}=== Auto Reboot Settings ===${NC}"
+    echo -e "  ${CYAN}1)${NC} Schedule daily auto reboot"
+    echo -e "  ${CYAN}2)${NC} Schedule weekly auto reboot"
+    echo -e "  ${CYAN}3)${NC} Enable ping watchdog (reboot/restart on ping timeout)"
+    echo -e "  ${CYAN}4)${NC} Disable all auto reboot"
+    echo -e "  ${CYAN}5)${NC} Show current auto reboot status"
+    echo -e "  ${CYAN}6)${NC} Back"
+    echo
+    read -p "$(echo -e "${YELLOW}Select [1-6]: ${NC}")" rb_choice
+
+    case $rb_choice in
+        1)
+            read -p "$(echo -e "${YELLOW}Reboot time (HH:MM, e.g. 03:00): ${NC}")" rb_time
+            rb_time=${rb_time:-03:00}
+            local rb_h rb_m
+            rb_h=$(echo "$rb_time" | cut -d: -f1)
+            rb_m=$(echo "$rb_time" | cut -d: -f2)
+            (crontab -l 2>/dev/null | grep -v "# slowdns-autoreboot"; echo "$rb_m $rb_h * * * /sbin/reboot # slowdns-autoreboot") | crontab -
+            echo -e "${GREEN}Daily auto reboot scheduled at ${rb_time}.${NC}"
+            log_msg "INFO" "Daily auto reboot set at $rb_time"
+            ;;
+        2)
+            read -p "$(echo -e "${YELLOW}Day of week (0=Sun,1=Mon,...,6=Sat): ${NC}")" rb_dow
+            rb_dow=${rb_dow:-0}
+            read -p "$(echo -e "${YELLOW}Reboot time (HH:MM, e.g. 03:00): ${NC}")" rb_time
+            rb_time=${rb_time:-03:00}
+            local rb_h rb_m
+            rb_h=$(echo "$rb_time" | cut -d: -f1)
+            rb_m=$(echo "$rb_time" | cut -d: -f2)
+            (crontab -l 2>/dev/null | grep -v "# slowdns-autoreboot"; echo "$rb_m $rb_h * * $rb_dow /sbin/reboot # slowdns-autoreboot") | crontab -
+            echo -e "${GREEN}Weekly auto reboot scheduled (day $rb_dow at ${rb_time}).${NC}"
+            log_msg "INFO" "Weekly auto reboot set day=$rb_dow at $rb_time"
+            ;;
+        3)
+            setup_ping_watchdog
+            ;;
+        4)
+            (crontab -l 2>/dev/null | grep -v "# slowdns-autoreboot" | grep -v "ping-watchdog") | crontab -
+            rm -f "$INSTALL_DIR/scripts/ping-watchdog.sh"
+            echo -e "${GREEN}All auto reboot cron jobs removed.${NC}"
+            log_msg "INFO" "Auto reboot disabled"
+            ;;
+        5)
+            echo -e "\n${CYAN}Current auto reboot cron jobs:${NC}"
+            crontab -l 2>/dev/null | grep -E "autoreboot|ping-watchdog" || echo -e "${YELLOW}None configured.${NC}"
+            ;;
+        6) return ;;
+        *) echo -e "${RED}Invalid option.${NC}" ;;
+    esac
+    read -p "$(echo -e "${CYAN}Press Enter to continue...${NC}")"
+}
+
+setup_ping_watchdog() {
+    echo -e "\n${CYAN}=== Ping Watchdog Setup ===${NC}"
+    echo -e "${YELLOW}The watchdog pings a host every N minutes.${NC}"
+    echo -e "${YELLOW}If ping fails it can restart the DNSTT service or reboot the server.${NC}"
+    echo
+
+    read -p "$(echo -e "${YELLOW}Ping target host (default: 8.8.8.8): ${NC}")" wdog_host
+    wdog_host=${wdog_host:-8.8.8.8}
+
+    read -p "$(echo -e "${YELLOW}Check interval in minutes (default: 5): ${NC}")" wdog_interval
+    wdog_interval=${wdog_interval:-5}
+    if ! [[ "$wdog_interval" =~ ^[0-9]+$ ]] || [[ $wdog_interval -lt 1 ]]; then
+        wdog_interval=5
+    fi
+
+    read -p "$(echo -e "${YELLOW}Consecutive failures before action (default: 3): ${NC}")" wdog_fails
+    wdog_fails=${wdog_fails:-3}
+    if ! [[ "$wdog_fails" =~ ^[0-9]+$ ]] || [[ $wdog_fails -lt 1 ]]; then
+        wdog_fails=3
+    fi
+
+    echo -e "\n${YELLOW}Action on failure:${NC}"
+    echo -e "  ${CYAN}1)${NC} Restart DNSTT service only (Recommended)"
+    echo -e "  ${CYAN}2)${NC} Reboot server"
+    echo -e "  ${CYAN}3)${NC} Restart service first, reboot if still failing"
+    read -p "$(echo -e "${YELLOW}Select [1-3]: ${NC}")" wdog_action
+    wdog_action=${wdog_action:-1}
+
+    local action_cmd
+    case $wdog_action in
+        2)
+            action_cmd='/sbin/reboot'
+            ;;
+        3)
+            action_cmd='systemctl restart ai-slowdns-tz.service; sleep 30; if ! ping -c 1 -W 5 '"$wdog_host"' &>/dev/null; then /sbin/reboot; fi'
+            ;;
+        *)
+            action_cmd='systemctl restart ai-slowdns-tz.service'
+            ;;
+    esac
+
+    mkdir -p "$INSTALL_DIR/scripts"
+    cat > "$INSTALL_DIR/scripts/ping-watchdog.sh" << WATCHDOG
+#!/bin/bash
+PING_HOST="$wdog_host"
+MAX_FAILS=$wdog_fails
+FAIL_COUNT_FILE="/tmp/slowdns_ping_fails"
+
+current_fails=0
+if [[ -f "\$FAIL_COUNT_FILE" ]]; then
+    current_fails=\$(cat "\$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
+fi
+
+if ping -c 2 -W 5 "\$PING_HOST" &>/dev/null; then
+    echo 0 > "\$FAIL_COUNT_FILE"
+    exit 0
+fi
+
+current_fails=\$((current_fails + 1))
+echo "\$current_fails" > "\$FAIL_COUNT_FILE"
+echo "[\$(date)] Ping to \$PING_HOST failed. Consecutive failures: \$current_fails" >> "$LOG_DIR/ping-watchdog.log"
+
+if [[ \$current_fails -ge \$MAX_FAILS ]]; then
+    echo "[\$(date)] Max failures reached (\$MAX_FAILS). Taking action." >> "$LOG_DIR/ping-watchdog.log"
+    echo 0 > "\$FAIL_COUNT_FILE"
+    $action_cmd
+fi
+WATCHDOG
+    chmod +x "$INSTALL_DIR/scripts/ping-watchdog.sh"
+
+    (crontab -l 2>/dev/null | grep -v "ping-watchdog"; echo "*/${wdog_interval} * * * * $INSTALL_DIR/scripts/ping-watchdog.sh") | crontab -
+
+    mkdir -p "$LOG_DIR"
+    echo -e "${GREEN}Ping watchdog enabled!${NC}"
+    echo -e "  ${CYAN}Target:    ${WHITE}$wdog_host${NC}"
+    echo -e "  ${CYAN}Interval:  ${WHITE}every ${wdog_interval} min${NC}"
+    echo -e "  ${CYAN}Fails:     ${WHITE}$wdog_fails consecutive before action${NC}"
+    log_msg "INFO" "Ping watchdog configured: host=$wdog_host interval=${wdog_interval}m fails=$wdog_fails"
+}
+
+# ========================================================================
 # SHOW LOGS
 # ========================================================================
 
@@ -1153,6 +1290,9 @@ show_logs() {
     echo
     echo -e "${CYAN}=== Expiry Logs ===${NC}"
     tail -20 "$LOG_DIR/expiry.log" 2>/dev/null || echo -e "${YELLOW}No expiry logs yet.${NC}"
+    echo
+    echo -e "${CYAN}=== Ping Watchdog Logs ===${NC}"
+    tail -20 "$LOG_DIR/ping-watchdog.log" 2>/dev/null || echo -e "${YELLOW}No ping watchdog logs yet.${NC}"
 }
 
 # ========================================================================
@@ -1271,9 +1411,10 @@ main_menu() {
         echo -e "  ${CYAN}6)${NC} Restart DNSTT Service"
         echo -e "  ${CYAN}7)${NC} Show Public Key"
         echo -e "  ${CYAN}8)${NC} Uninstall"
+        echo -e "  ${CYAN}9)${NC} Auto Reboot / Ping Watchdog"
         echo -e "  ${CYAN}0)${NC} Exit"
         echo
-        read -p "$(echo -e "${YELLOW}Select [0-8]: ${NC}")" main_choice
+        read -p "$(echo -e "${YELLOW}Select [0-9]: ${NC}")" main_choice
 
         case $main_choice in
             1)
@@ -1310,6 +1451,7 @@ main_menu() {
             8) uninstall
                read -p "$(echo -e "${CYAN}Press Enter to continue...${NC}")"
                ;;
+            9) setup_auto_reboot ;;
             0)
                 echo -e "${GREEN}Goodbye!${NC}"
                 exit 0
