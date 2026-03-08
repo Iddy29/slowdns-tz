@@ -594,22 +594,30 @@ select_mtu() {
     echo -e "${YELLOW}Lower MTU = more compatible but slower.${NC}"
     echo -e "${YELLOW}Higher MTU = faster but may be blocked by some networks.${NC}"
     echo
-    echo -e "  ${CYAN}1)${NC} 512  (Default - most compatible, works on restrictive networks)"
-    echo -e "  ${CYAN}2)${NC} 760  (Balanced - good speed and compatibility)"
-    echo -e "  ${CYAN}3)${NC} 1024 (Fast - works on most networks)"
-    echo -e "  ${CYAN}4)${NC} 1232 (Maximum - best speed, may not work everywhere)"
-    echo -e "  ${CYAN}5)${NC} Custom MTU size"
+    echo -e "  ${CYAN}1)${NC} 128  (Ultra low - very restrictive networks)"
+    echo -e "  ${CYAN}2)${NC} 256  (Very low - restrictive networks)"
+    echo -e "  ${CYAN}3)${NC} 512  (Default - most compatible)"
+    echo -e "  ${CYAN}4)${NC} 760  (Balanced - good speed and compatibility)"
+    echo -e "  ${CYAN}5)${NC} 1024 (Fast - works on most networks)"
+    echo -e "  ${CYAN}6)${NC} 1232 (High speed)"
+    echo -e "  ${CYAN}7)${NC} 1400 (Very high speed)"
+    echo -e "  ${CYAN}8)${NC} 1452 (Maximum - best speed, may not work everywhere)"
+    echo -e "  ${CYAN}9)${NC} Custom MTU size (64 - 65535)"
     echo
-    read -p "$(echo -e "${YELLOW}Select MTU [1-5] (default: 1 = 512): ${NC}")" mtu_choice
+    read -p "$(echo -e "${YELLOW}Select MTU [1-9] (default: 3 = 512): ${NC}")" mtu_choice
 
     case $mtu_choice in
-        1|"") MTU_SIZE=512 ;;
-        2) MTU_SIZE=760 ;;
-        3) MTU_SIZE=1024 ;;
-        4) MTU_SIZE=1232 ;;
-        5)
-            read -p "$(echo -e "${YELLOW}Enter custom MTU (128-1452): ${NC}")" custom_mtu
-            if [[ "$custom_mtu" =~ ^[0-9]+$ ]] && [[ $custom_mtu -ge 128 ]] && [[ $custom_mtu -le 1452 ]]; then
+        1) MTU_SIZE=128 ;;
+        2) MTU_SIZE=256 ;;
+        3|"") MTU_SIZE=512 ;;
+        4) MTU_SIZE=760 ;;
+        5) MTU_SIZE=1024 ;;
+        6) MTU_SIZE=1232 ;;
+        7) MTU_SIZE=1400 ;;
+        8) MTU_SIZE=1452 ;;
+        9)
+            read -p "$(echo -e "${YELLOW}Enter custom MTU (64-65535): ${NC}")" custom_mtu
+            if [[ "$custom_mtu" =~ ^[0-9]+$ ]] && [[ $custom_mtu -ge 64 ]] && [[ $custom_mtu -le 65535 ]]; then
                 MTU_SIZE=$custom_mtu
             else
                 echo -e "${RED}Invalid MTU. Using default 512.${NC}"
@@ -1330,6 +1338,95 @@ uninstall() {
 }
 
 # ========================================================================
+# ADVANCED SETTINGS
+# ========================================================================
+
+advanced_settings_menu() {
+    while true; do
+        load_config
+        echo -e "\n${PURPLE}╔══════════════════════════════════════╗${NC}"
+        echo -e "${PURPLE}║        ADVANCED SETTINGS             ║${NC}"
+        echo -e "${PURPLE}╚══════════════════════════════════════╝${NC}"
+        echo -e "  ${CYAN}Current settings:${NC}"
+        echo -e "    MTU Size    : ${WHITE}${MTU_SIZE:-512}${NC}"
+        echo -e "    DNSTT Port  : ${WHITE}${DNSTT_PORT:-5300}${NC}"
+        echo -e "    SSH Port    : ${WHITE}${SSH_PORT:-22}${NC}"
+        echo
+        echo -e "  ${CYAN}1)${NC} Change MTU Size"
+        echo -e "  ${CYAN}2)${NC} Change DNSTT Port"
+        echo -e "  ${CYAN}3)${NC} Change SSH Port"
+        echo -e "  ${CYAN}4)${NC} Change DNS Resolver (resolv.conf)"
+        echo -e "  ${CYAN}5)${NC} Apply & Restart DNSTT Service"
+        echo -e "  ${CYAN}6)${NC} Back to Main Menu"
+        echo
+        read -p "$(echo -e "${YELLOW}Select [1-6]: ${NC}")" adv_choice
+        case $adv_choice in
+            1)
+                select_mtu
+                save_config
+                ;;
+            2)
+                read -p "$(echo -e "${YELLOW}Enter new DNSTT port (1-65535, current: ${DNSTT_PORT:-5300}): ${NC}")" new_dnstt_port
+                if [[ "$new_dnstt_port" =~ ^[0-9]+$ ]] && [[ $new_dnstt_port -ge 1 ]] && [[ $new_dnstt_port -le 65535 ]]; then
+                    DNSTT_PORT=$new_dnstt_port
+                    save_config
+                    echo -e "${GREEN}DNSTT port set to: $DNSTT_PORT${NC}"
+                else
+                    echo -e "${RED}Invalid port number.${NC}"
+                fi
+                ;;
+            3)
+                read -p "$(echo -e "${YELLOW}Enter new SSH port (1-65535, current: ${SSH_PORT:-22}): ${NC}")" new_ssh_port
+                if [[ "$new_ssh_port" =~ ^[0-9]+$ ]] && [[ $new_ssh_port -ge 1 ]] && [[ $new_ssh_port -le 65535 ]]; then
+                    SSH_PORT=$new_ssh_port
+                    save_config
+                    echo -e "${GREEN}SSH port set to: $SSH_PORT${NC}"
+                    echo -e "${YELLOW}Note: Update sshd_config and iptables manually if needed.${NC}"
+                else
+                    echo -e "${RED}Invalid port number.${NC}"
+                fi
+                ;;
+            4)
+                echo -e "\n${CYAN}Current /etc/resolv.conf:${NC}"
+                cat /etc/resolv.conf 2>/dev/null || echo -e "${YELLOW}Not found.${NC}"
+                echo
+                read -p "$(echo -e "${YELLOW}Enter primary DNS (e.g. 1.1.1.1): ${NC}")" dns1
+                read -p "$(echo -e "${YELLOW}Enter secondary DNS (e.g. 8.8.8.8): ${NC}")" dns2
+                dns1=${dns1:-1.1.1.1}
+                dns2=${dns2:-8.8.8.8}
+                if [[ -L /etc/resolv.conf ]]; then
+                    rm -f /etc/resolv.conf
+                fi
+                printf "nameserver %s\nnameserver %s\n" "$dns1" "$dns2" > /etc/resolv.conf
+                echo -e "${GREEN}DNS set to: $dns1 / $dns2${NC}"
+                ;;
+            5)
+                if [[ -f /etc/systemd/system/ai-slowdns-tz.service ]]; then
+                    local EXEC_CMD="$DNSTT_BIN -udp :$DNSTT_PORT -privkey-file $PRIVKEY_FILE $NAMESERVER 127.0.0.1:$SSH_PORT"
+                    if "$DNSTT_BIN" -help 2>&1 | grep -qi '\-mtu'; then
+                        EXEC_CMD="$DNSTT_BIN -udp :$DNSTT_PORT -mtu $MTU_SIZE -privkey-file $PRIVKEY_FILE $NAMESERVER 127.0.0.1:$SSH_PORT"
+                    fi
+                    sed -i "s|^ExecStart=.*|ExecStart=$EXEC_CMD|" /etc/systemd/system/ai-slowdns-tz.service
+                    systemctl daemon-reload
+                    systemctl restart ai-slowdns-tz.service
+                    sleep 2
+                    if systemctl is-active --quiet ai-slowdns-tz.service; then
+                        echo -e "${GREEN}DNSTT service restarted with new settings.${NC}"
+                    else
+                        echo -e "${RED}Service failed to restart. Check: journalctl -u ai-slowdns-tz.service${NC}"
+                    fi
+                else
+                    echo -e "${YELLOW}Service not installed yet.${NC}"
+                fi
+                ;;
+            6) return ;;
+            *) echo -e "${RED}Invalid option.${NC}" ;;
+        esac
+        read -p "$(echo -e "${CYAN}Press Enter to continue...${NC}")"
+    done
+}
+
+# ========================================================================
 # FULL INSTALLATION FLOW
 # ========================================================================
 
@@ -1412,9 +1509,10 @@ main_menu() {
         echo -e "  ${CYAN}7)${NC} Show Public Key"
         echo -e "  ${CYAN}8)${NC} Uninstall"
         echo -e "  ${CYAN}9)${NC} Auto Reboot / Ping Watchdog"
+        echo -e "  ${CYAN}A)${NC} Advanced Settings (MTU, Ports, DNS)"
         echo -e "  ${CYAN}0)${NC} Exit"
         echo
-        read -p "$(echo -e "${YELLOW}Select [0-9]: ${NC}")" main_choice
+        read -p "$(echo -e "${YELLOW}Select [0-9/A]: ${NC}")" main_choice
 
         case $main_choice in
             1)
@@ -1452,6 +1550,7 @@ main_menu() {
                read -p "$(echo -e "${CYAN}Press Enter to continue...${NC}")"
                ;;
             9) setup_auto_reboot ;;
+            [Aa]) advanced_settings_menu ;;
             0)
                 echo -e "${GREEN}Goodbye!${NC}"
                 exit 0
