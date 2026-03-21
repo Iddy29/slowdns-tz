@@ -702,10 +702,14 @@ DNSEOF
     echo -e "${GREEN}  systemd-resolved stopped, using 1.1.1.1 + 8.8.8.8${NC}"
 
     # Kill anything else on port 53
-    if ss -uln | grep -q ':53 '; then
+    if ss -uln 2>/dev/null | grep -q ':53 ' || ss -tln 2>/dev/null | grep -q ':53 '; then
         echo -e "${YELLOW}  Something still on port 53, killing...${NC}"
         fuser -k 53/udp > /dev/null 2>&1
         fuser -k 53/tcp > /dev/null 2>&1
+        # Also try to stop common DNS services
+        systemctl stop bind9 > /dev/null 2>&1
+        systemctl stop named > /dev/null 2>&1
+        systemctl stop dnsmasq > /dev/null 2>&1
         sleep 1
     fi
 
@@ -718,36 +722,48 @@ download_binaries() {
 
     mkdir -p "$INSTALL_DIR"
 
-    local BASE_URL="https://raw.githubusercontent.com/$GITHUB_USER/$REPO_NAME/main/bin"
+    local BASE_URL="https://raw.githubusercontent.com/$GITHUB_USER/$REPO_NAME/main"
 
     # Download sldns-server (the SlowDNS server binary)
     echo -e "${CYAN}  Downloading sldns-server...${NC}"
-    if wget -q "$BASE_URL/sldns-server" -O "$SLDNS_BIN" 2>/dev/null; then
-        chmod +x "$SLDNS_BIN"
-        echo -e "${GREEN}  [+] sldns-server downloaded${NC}"
-    else
-        # Fallback sources
-        echo -e "${YELLOW}  Primary source failed, trying fallback...${NC}"
-        wget -q "https://raw.githubusercontent.com/NevermoreSSH/hopp/main/slowdns/sldns-server" -O "$SLDNS_BIN" 2>/dev/null || {
-            echo -e "${RED}  FATAL: Could not download sldns-server!${NC}"
-            log_msg "ERROR" "sldns-server download failed"
-            exit 1
-        }
-        chmod +x "$SLDNS_BIN"
-        echo -e "${GREEN}  [+] sldns-server downloaded (fallback)${NC}"
+    # Try multiple sources
+    local sldns_urls=(
+        "$BASE_URL/sldns-server%20(1)"
+        "$BASE_URL/sldns-server"
+        "https://raw.githubusercontent.com/NevermoreSSH/hopp/main/slowdns/sldns-server"
+    )
+    
+    for url in "${sldns_urls[@]}"; do
+        echo -e "${CYAN}    Trying: $url${NC}"
+        if wget -q "$url" -O "$SLDNS_BIN" 2>/dev/null && [[ -s "$SLDNS_BIN" ]]; then
+            chmod +x "$SLDNS_BIN"
+            echo -e "${GREEN}  [+] sldns-server downloaded${NC}"
+            break
+        fi
+    done
+    
+    # Verify we got a valid binary
+    if [[ ! -s "$SLDNS_BIN" ]] || ! file "$SLDNS_BIN" | grep -q "ELF"; then
+        echo -e "${RED}  FATAL: Could not download valid sldns-server!${NC}"
+        log_msg "ERROR" "sldns-server download failed"
+        exit 1
     fi
 
-    # Download sldns-client
+    # Download sldns-client (optional - for client-side tunneling)
     echo -e "${CYAN}  Downloading sldns-client...${NC}"
-    if wget -q "$BASE_URL/sldns-client" -O "$SLDNS_CLIENT" 2>/dev/null; then
-        chmod +x "$SLDNS_CLIENT"
-        echo -e "${GREEN}  [+] sldns-client downloaded${NC}"
-    else
-        wget -q "https://raw.githubusercontent.com/NevermoreSSH/hopp/main/slowdns/sldns-client" -O "$SLDNS_CLIENT" 2>/dev/null || {
-            echo -e "${YELLOW}  WARNING: Could not download sldns-client (optional)${NC}"
-        }
-        chmod +x "$SLDNS_CLIENT" 2>/dev/null
-    fi
+    local sldns_client_urls=(
+        "$BASE_URL/dnstt-client"
+        "https://raw.githubusercontent.com/NevermoreSSH/hopp/main/slowdns/sldns-client"
+    )
+    
+    for url in "${sldns_client_urls[@]}"; do
+        echo -e "${CYAN}    Trying: $url${NC}"
+        if wget -q "$url" -O "$SLDNS_CLIENT" 2>/dev/null && [[ -s "$SLDNS_CLIENT" ]]; then
+            chmod +x "$SLDNS_CLIENT"
+            echo -e "${GREEN}  [+] sldns-client downloaded${NC}"
+            break
+        fi
+    done
 
     # Verify server binary
     if [[ ! -f "$SLDNS_BIN" ]] || [[ ! -x "$SLDNS_BIN" ]]; then
@@ -925,8 +941,19 @@ configure_iptables() {
     iptables -I INPUT -p tcp --dport $SSH_PORT -j ACCEPT
 
     # Redirect incoming DNS (port 53) to DNSTT server (port 5300)
-    iptables -t nat -A PREROUTING -i "$(ip route show default | awk '{print $5}' | head -1)" -p udp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT
-    iptables -t nat -A PREROUTING -i "$(ip route show default | awk '{print $5}' | head -1)" -p tcp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT
+    local default_iface
+    default_iface=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
+    
+    if [[ -n "$default_iface" ]]; then
+        iptables -t nat -A PREROUTING -i "$default_iface" -p udp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT
+        iptables -t nat -A PREROUTING -i "$default_iface" -p tcp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT
+        echo -e "${GREEN}  Applied iptables redirect on interface: $default_iface${NC}"
+    else
+        # Fallback: apply without interface filter
+        iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT
+        iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT
+        echo -e "${YELLOW}  Applied iptables redirect on all interfaces (fallback)${NC}"
+    fi
 
     # IPv6 if available
     ip6tables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports $DNSTT_PORT 2>/dev/null
